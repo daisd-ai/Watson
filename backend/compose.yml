@@ -1,0 +1,129 @@
+services:
+  wb-api:
+    container_name: ${API_CONTAINER_NAME}
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    env_file:
+      - ../.env
+      - ./.env
+    networks:
+      - watson-network
+    ports:
+      - "${API_PORT}:${API_PORT}"
+    depends_on:
+      wb-celery-worker:
+        condition: service_started
+      wb-postgres:
+        condition: service_healthy
+      # wb-vllm-server:
+      #   condition: service_healthy
+    command: python -m uvicorn api.main:app --host 0.0.0.0 --reload --port ${API_PORT}
+    volumes:
+      - ./api:/app/api
+
+  wb-vllm-server:
+    container_name: ${VLLM_CONTAINER_NAME}
+    build:
+      context: .
+      dockerfile: docker/vllm/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    networks:
+      - watson-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ["0"]
+    runtime: nvidia
+    command: ${EMBEDDING_MODEL} --host 0.0.0.0 --port ${VLLM_PORT} --gpu-memory-utilization 0.1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT}/ping"]
+      interval: 30s
+      timeout: 30s
+      retries: 8
+      start_period: 30s
+
+  wb-celery-worker:
+    container_name: ${CELERY_CONTAINER_NAME}
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    command: celery -A api.worker.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=1 --pool=solo
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    networks:
+      - watson-network
+    depends_on:
+      wb-minio:
+        condition: service_started
+      wb-rabbitmq:
+        condition: service_started
+    volumes:
+      - ./container-data/watson-backend/models:/artifacts
+      - ./container-data/watson-backend/hf-models:/root/.cache/huggingface/hub
+    environment:
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ["0"]
+    runtime: nvidia
+
+  wb-minio:
+    container_name: ${MINIO_CONTAINER_NAME}
+    build:
+      context: .
+      dockerfile: docker/minio/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    networks:
+      - watson-network
+    volumes:
+      - ./container-data/watson-backend/minio:/data
+    command: server --address ":${MINIO_PORT}" /data
+
+  wb-rabbitmq:
+    container_name: ${RABBITMQ_CONTAINER_NAME}
+    build:
+      context: .
+      dockerfile: docker/rabbitmq/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    networks:
+      - watson-network
+
+  wb-postgres:
+    container_name: ${POSTGRES_CONTAINER_NAME}
+    build:
+      context: .
+      dockerfile: docker/postgres/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    networks:
+      - watson-network
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - ./container-data/watson-backend/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s

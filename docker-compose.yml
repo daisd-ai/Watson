@@ -1,0 +1,7 @@
+include:
+  - backend/compose.yml
+  - frontend/compose.yml
+
+networks:
+  watson-network:
+    driver: bridge

@@ -1,0 +1,16 @@
+services:
+  react-dev:
+    build:
+      context: .
+      dockerfile: docker/react/Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - ../.env
+      - ./.env
+    volumes:
+      - ./Watson/:/app
+      - /app/node_modules
+    networks:
+      - watson-network
+    restart: unless-stopped
